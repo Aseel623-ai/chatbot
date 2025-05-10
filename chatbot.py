@@ -1,76 +1,47 @@
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from PIL import Image
-import pytesseract
-import io
+from fastapi import FastAPI, UploadFile, File
 import google.generativeai as genai
+import pytesseract
+from PIL import Image
+import os
 
-# إعداد Gemini API
-genai.configure(api_key="YOUR_API_KEY")  # ← عدّلها بمفتاحك
+# إعداد مفتاح Gemini API (يفضل استخدام متغير بيئة في الإنتاج)
+genai.configure(api_key="YOUR_API_KEY")
 
-# إعداد Tesseract OCR (غير ضروري في سيرفر Linux غالبًا)
+# تحديد مكان Tesseract (اختياري إذا كنت على لينكس وتم تركيبه بشكل صحيح)
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
-# إعداد FastAPI
+# تهيئة النموذج
+model = genai.GenerativeModel(model_name="models/gemini-1.5-pro")
+
 app = FastAPI()
 
-# السماح بالاتصال من أي مكان (للجبهة الأمامية مثلاً)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.get("/")
+def root():
+    return {"message": "شات بوت طبي - FastAPI API يعمل بنجاح"}
 
-# نموذج للمحادثة
-class ChatRequest(BaseModel):
-    user_input: str
-
-@app.post("/chat")
-def chat(request: ChatRequest):
-    user_input = request.user_input.strip()
-
-    prompt = f"""أنت مساعد طبي ذكي تابع لإدارة طبية.
-مهمتك:
-- فهم الأعراض أو السؤال المقدم من المستخدم
-- تقديم تشخيص مبدأي إن أمكن
-- إعطاء نصيحة طبية مناسبة
-- تحديد التخصص الطبي الذي يجب على المستخدم زيارته
-
-السؤال أو الأعراض: {user_input}
-"""
-
+@app.post("/analyze")
+async def analyze(file: UploadFile = File(...)):
     try:
-        model = genai.GenerativeModel(model_name="models/gemini-1.5-pro")
-        response = model.generate_content([{"role": "user", "parts": [prompt]}])
-        return {"response": response.text}
-    except Exception as e:
-        return {"error": str(e)}
+        image = Image.open(file.file)
+        extracted_text = pytesseract.image_to_string(image, lang='ara+eng')
 
-@app.post("/upload")
-async def upload_analysis(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
-        extracted_text = pytesseract.image_to_string(image, lang="ara+eng")
-
-        prompt = f"""أنت مساعد طبي ذكي تابع للإدارة الطبية.
-مهمتك:
-- قراءة نتائج التحاليل المرفقة.
-- تلخيص النتائج بشكل تقرير طبي واضح.
+        messages = [
+            {
+                "role": "user",
+                "parts": [f"""أنت مساعد طبي ذكي.
+مهمتك هي:
+- قراءة نتائج التحاليل الطبية.
+- تلخيص النتائج في تقرير طبي واضح.
 - تقديم نصيحة طبية عامة حسب النتائج.
-- اقتراح التخصص الطبي المناسب إن لزم.
+- اقتراح التخصص الطبي المناسب.
 
-نتائج التحاليل المستخرجة:
-{extracted_text}
-"""
-        model = genai.GenerativeModel(model_name="models/gemini-1.5-pro")
-        response = model.generate_content([{"role": "user", "parts": [prompt]}])
-        return {
-            "extracted_text": extracted_text,
-            "diagnosis": response.text
-        }
+نتائج التحاليل:
+{extracted_text}"""]
+            }
+        ]
+
+        response = model.generate_content(messages)
+        return {"diagnosis": response.text}
 
     except Exception as e:
         return {"error": str(e)}
